@@ -19,7 +19,67 @@ class QNetwork(nn.Module):
         x = torch.relu(self.fc2(x))
         return self.fc3(x)
 
+
 class QAgent:
+    def __init__(self, state_size, action_size, seed, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995) :
+        self.state_size = state_size
+        self.action_size = action_size
+        self.seed = random.seed(seed)
+        self.gamma = gamma
+        self.lr = lr
+        self.batch_size = batch_size
+        self.buffer_size = buffer_size
+        self.epsilon = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+
+        self.qnetwork = QNetwork( state_size , action_size )
+        self.optimizer = optim.Adam( self.qnetwork.parameters() , lr=self.lr )
+
+        self.memory = deque( maxlen=buffer_size )
+        self.t_step = 0
+
+    def step(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+        self.t_step = (self.t_step + 1) % 4
+        if len(self.memory) > self.batch_size and self.t_step == 0:
+            self.learn()
+
+    def act(self, state):
+        state = torch.from_numpy(state).float().unsqueeze(0)
+        self.qnetwork.eval()
+        with torch.no_grad():
+            action_values = self.qnetwork(state)
+        self.qnetwork.train()
+
+        if random.random() > self.epsilon:
+            return np.argmax(action_values.cpu().data.numpy())
+        else:
+            return random.choice(np.arange(self.action_size))
+
+    def learn(self):
+        experiences = random.sample(self.memory, self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*experiences)
+
+        states = torch.from_numpy(np.vstack(states)).float()
+        actions = torch.from_numpy(np.vstack(actions)).long()
+        rewards = torch.from_numpy(np.vstack(rewards)).float()
+        next_states = torch.from_numpy(np.vstack(next_states)).float()
+        dones = torch.from_numpy(np.vstack(dones).astype(np.uint8)).float()
+
+        Q_targets_next = self.qnetwork(next_states).detach().max(1)[0].unsqueeze(1)
+        Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
+
+        Q_expected = self.qnetwork(states).gather(1, actions)
+
+        loss = nn.MSELoss()(Q_expected, Q_targets)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
+
+class QAgent_DblQ:
     def __init__(self, state_size, action_size, seed, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995) :
         self.state_size = state_size
         self.action_size = action_size
@@ -113,10 +173,3 @@ if __name__ == "__main__" :
             if done or truncated or time == 499 :
                 print(f"Episode: {e+1}/{num_episodes} , Score: {total_reward} , Done: {done} , Truncated: {truncated} , Time: {time}")
                 break
-
-
-# Example usage:
-# agent = QAgent(state_size=8, action_size=4, seed=0)
-# state = np.random.rand(8)
-# action = agent.act(state)
-# agent.step(state, action, reward=1.0, next_state=np.random.rand(8), done=False)
