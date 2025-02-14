@@ -45,8 +45,6 @@ class QAgent:
     def step(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
         self.t_step = (self.t_step + 1) % 4
-        if len(self.memory) > self.batch_size and self.t_step == 0:
-            self.learn()
 
     def act(self, state):
         state = torch.from_numpy(state).float().unsqueeze(0)
@@ -61,26 +59,29 @@ class QAgent:
             return random.choice(np.arange(self.action_size))
 
     def learn(self):
-        experiences = random.sample(self.memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*experiences)
 
-        states = torch.from_numpy(np.vstack(states)).float()
-        actions = torch.from_numpy(np.vstack(actions)).long()
-        rewards = torch.from_numpy(np.vstack(rewards)).float()
-        next_states = torch.from_numpy(np.vstack(next_states)).float()
-        dones = torch.from_numpy(np.vstack(dones).astype(np.uint8)).float()
+        if len(self.memory) > self.batch_size and self.t_step == 0:
 
-        Q_targets_next = self.qnetwork(next_states).detach().max(1)[0].unsqueeze(1)
-        Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
+            experiences = random.sample(self.memory, self.batch_size)
+            states, actions, rewards, next_states, dones = zip(*experiences)
 
-        Q_expected = self.qnetwork(states).gather(1, actions)
+            states = torch.from_numpy(np.vstack(states)).float()
+            actions = torch.from_numpy(np.vstack(actions)).long()
+            rewards = torch.from_numpy(np.vstack(rewards)).float()
+            next_states = torch.from_numpy(np.vstack(next_states)).float()
+            dones = torch.from_numpy(np.vstack(dones).astype(np.uint8)).float()
 
-        loss = nn.MSELoss()(Q_expected, Q_targets)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+            Q_targets_next = self.qnetwork(next_states).detach().max(1)[0].unsqueeze(1)
+            Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
 
-        self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
+            Q_expected = self.qnetwork(states).gather(1, actions)
+
+            loss = nn.MSELoss()(Q_expected, Q_targets)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+            self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
 
 class QAgent_DblQ( QAgent ):
     def __init__(self, state_size, action_size, seed, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995 , memory=None ):
@@ -102,32 +103,51 @@ class QAgent_DblQ( QAgent ):
             return random.choice(np.arange(self.action_size))
 
     def learn(self):
-        experiences = random.sample(self.memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*experiences)
 
-        states = torch.from_numpy(np.vstack(states)).float()
-        actions = torch.from_numpy(np.vstack(actions)).long()
-        rewards = torch.from_numpy(np.vstack(rewards)).float()
-        next_states = torch.from_numpy(np.vstack(next_states)).float()
-        dones = torch.from_numpy(np.vstack(dones).astype(np.uint8)).float()
+        if len(self.memory) > self.batch_size and self.t_step == 0:
 
-        Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
-        Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
+            experiences = random.sample(self.memory, self.batch_size)
+            states, actions, rewards, next_states, dones = zip(*experiences)
 
-        Q_expected = self.qnetwork(states).gather(1, actions)
+            states = torch.from_numpy(np.vstack(states)).float()
+            actions = torch.from_numpy(np.vstack(actions)).long()
+            rewards = torch.from_numpy(np.vstack(rewards)).float()
+            next_states = torch.from_numpy(np.vstack(next_states)).float()
+            dones = torch.from_numpy(np.vstack(dones).astype(np.uint8)).float()
 
-        loss = nn.MSELoss()(Q_expected, Q_targets)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+            Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+            Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
 
-        self.soft_update(self.qnetwork, self.qnetwork_target)
+            Q_expected = self.qnetwork(states).gather(1, actions)
 
-        self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
+            loss = nn.MSELoss()(Q_expected, Q_targets)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+            self.soft_update(self.qnetwork, self.qnetwork_target)
+
+            self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
 
     def soft_update(self, local_model, target_model, tau=0.001):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
+
+
+class Crowd() :
+
+    def __init__( self , Qagent_list ) :
+        self.Qagent_list = Qagent_list
+
+    def act( self , state ) :
+        action_list = []
+        for agent in self.Qagent_list :
+            action_list.append( agent.act(state) )
+        return np.argmax( np.bincount(action_list) )
+    
+    def step( self , state , action , reward , next_state , done ) :
+        for agent in self.Qagent_list :
+            agent.step( state , action , reward , next_state , done )
 
 if __name__ == "__main__" :
 
@@ -137,6 +157,7 @@ if __name__ == "__main__" :
     state_size = env.observation_space.shape[0]
     action_size = env.action_space.n
     agent = QAgent_DblQ( state_size=state_size, action_size=action_size, seed=0 )
+    # agent = QAgent( state_size=state_size, action_size=action_size, seed=0 )
 
     num_episodes = 1000
     for e in range(num_episodes):
@@ -151,6 +172,7 @@ if __name__ == "__main__" :
             next_state , reward , done , truncated , info = env.step(action)
             next_state = np.reshape(next_state, [1, state_size])
             agent.step(state, action, reward, next_state, done)
+            agent.learn()
             state = next_state
             total_reward += reward
 
