@@ -21,7 +21,7 @@ class QNetwork(nn.Module):
 
 
 class QAgent:
-    def __init__(self, state_size, action_size, seed, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995) :
+    def __init__(self, state_size, action_size, seed, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995, memory=None):
         self.state_size = state_size
         self.action_size = action_size
         self.seed = random.seed(seed)
@@ -36,7 +36,10 @@ class QAgent:
         self.qnetwork = QNetwork( state_size , action_size )
         self.optimizer = optim.Adam( self.qnetwork.parameters() , lr=self.lr )
 
-        self.memory = deque( maxlen=buffer_size )
+        if memory is None:
+            self.memory = deque( maxlen=buffer_size )
+        else:
+            self.memory = memory
         self.t_step = 0
 
     def step(self, state, action, reward, next_state, done):
@@ -79,38 +82,19 @@ class QAgent:
 
         self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
 
-class QAgent_DblQ:
-    def __init__(self, state_size, action_size, seed, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995) :
-        self.state_size = state_size
-        self.action_size = action_size
-        self.seed = random.seed(seed)
-        self.gamma = gamma
-        self.lr = lr
-        self.batch_size = batch_size
-        self.buffer_size = buffer_size
-        self.epsilon = epsilon_start
-        self.epsilon_end = epsilon_end
-        self.epsilon_decay = epsilon_decay
+class QAgent_DblQ( QAgent ):
+    def __init__(self, state_size, action_size, seed, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995 , memory=None ):
 
-        self.qnetwork_local = QNetwork(state_size, action_size)
+        super(QAgent_DblQ, self).__init__( state_size=state_size, action_size=action_size, seed=seed, gamma=gamma, lr=lr, batch_size=batch_size, buffer_size=buffer_size, epsilon_start=epsilon_start, epsilon_end=epsilon_end, epsilon_decay=epsilon_decay , memory=memory )
+
         self.qnetwork_target = QNetwork(state_size, action_size)
-        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=self.lr)
-
-        self.memory = deque(maxlen=buffer_size)
-        self.t_step = 0
-
-    def step(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-        self.t_step = (self.t_step + 1) % 4
-        if len(self.memory) > self.batch_size and self.t_step == 0:
-            self.learn()
 
     def act(self, state):
         state = torch.from_numpy(state).float().unsqueeze(0)
-        self.qnetwork_local.eval()
+        self.qnetwork.eval()
         with torch.no_grad():
-            action_values = self.qnetwork_local(state)
-        self.qnetwork_local.train()
+            action_values = self.qnetwork(state)
+        self.qnetwork.train()
 
         if random.random() > self.epsilon:
             return np.argmax(action_values.cpu().data.numpy())
@@ -130,14 +114,14 @@ class QAgent_DblQ:
         Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
         Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
 
-        Q_expected = self.qnetwork_local(states).gather(1, actions)
+        Q_expected = self.qnetwork(states).gather(1, actions)
 
         loss = nn.MSELoss()(Q_expected, Q_targets)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        self.soft_update(self.qnetwork_local, self.qnetwork_target)
+        self.soft_update(self.qnetwork, self.qnetwork_target)
 
         self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
 
@@ -152,7 +136,7 @@ if __name__ == "__main__" :
 
     state_size = env.observation_space.shape[0]
     action_size = env.action_space.n
-    agent = QAgent( state_size=state_size, action_size=action_size, seed=0 )
+    agent = QAgent_DblQ( state_size=state_size, action_size=action_size, seed=0 )
 
     num_episodes = 1000
     for e in range(num_episodes):
