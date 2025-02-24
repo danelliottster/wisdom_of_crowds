@@ -4,15 +4,30 @@ import torch.optim as optim
 import numpy as np
 import gymnasium as gym
 from collections import deque
-import random , argparse
+import random , argparse , time , uuid , pickle
 
 argparser = argparse.ArgumentParser()
 argparser.add_argument( "--algo" , type=str , default="simple" , help="simple or double or crowd" )
+argparser.add_argument( "--crowd" , action="store_true" , default=False , help="Enable crowd" )
 argparser.add_argument( "--num_agents" , type=int , default=10 , help="Number of agents in crowd" )
+argparser.add_argument( "--num_episodes" , type=int , default=1000 , help="Number of episodes" )
+argparser.add_argument( "--batch_size" , type=int , default=64 , help="Batch size for learning" )
+argparser.add_argument( "--epsilon_start" , type=float , default=1.0 , help="Starting epsilon value" )
+argparser.add_argument( "--epsilon_end" , type=float , default=0.01 , help="Ending epsilon value" )
+argparser.add_argument( "--epsilon_decay" , type=float , default=0.995 , help="Epsilon decay value" )
+argparser.add_argument( "--gamma" , type=float , default=0.99 , help="Discount factor" )
+argparser.add_argument( "--lr" , type=float , default=0.001 , help="Learning rate" )
+argparser.add_argument( "--seed" , type=int , default=0 , help="Seed for random number generation" )
+argparser.add_argument( "--gravity" , type=float , default=-10.0 , help="Gravity value" )
+argparser.add_argument( "--enable_wind" , type=bool , default=False , help="Enable wind" )
+argparser.add_argument( "--wind_power" , type=float , default=15.0 , help="Wind power" )
+argparser.add_argument( "--turbulence_power" , type=float , default=1.5 , help="Turbulence power" )
+argparser.add_argument( "--results_dir" , type=str , default=None , help="Directory to store results" )
+argparser.add_argument( "--training_epsisode_length" , type=int , default=500 , help="Training episode length" )
+argparser.add_argument( "--eval_interval" , type=int , default=0 , help="Evaluation interval" )
+argparser.add_argument( "--eval_episodes" , type=int , default=32 , help="Number of episodes for evaluation" )
+argparser.add_argument( "--eval_episode_length" , type=int , default=500 , help="Evaluation episode length" )
 args = argparser.parse_args()
-
-
-
 
 class QNetwork(nn.Module):
     def __init__(self, state_size, action_size):
@@ -28,10 +43,9 @@ class QNetwork(nn.Module):
 
 
 class QAgent:
-    def __init__(self , state_size , action_size , seed , gamma=0.99 , lr=0.001 , batch_size=64 , buffer_size=10000 , epsilon_start=1.0 , epsilon_end=0.01 , epsilon_decay=0.995 ):
+    def __init__(self , state_size , action_size , gamma=0.99 , lr=0.001 , batch_size=64 , buffer_size=10000 , epsilon_start=1.0 , epsilon_end=0.01 , epsilon_decay=0.995 ):
         self.state_size = state_size
         self.action_size = action_size
-        self.seed = random.seed(seed)
         self.gamma = gamma
         self.lr = lr
         self.batch_size = batch_size
@@ -43,14 +57,14 @@ class QAgent:
         self.qnetwork = QNetwork( state_size , action_size )
         self.optimizer = optim.Adam( self.qnetwork.parameters() , lr=self.lr )
 
-    def act( self , state ):
+    def act( self , state , deterministic=False ) :
         state = torch.from_numpy(state).float().unsqueeze(0)
         self.qnetwork.eval()
         with torch.no_grad():
             action_values = self.qnetwork( state )
         self.qnetwork.train()
 
-        if random.random() > self.epsilon:
+        if deterministic or random.random() > self.epsilon:
             return np.argmax( action_values.cpu().data.numpy() )
         else:
             return random.choice( np.arange(self.action_size) )
@@ -79,20 +93,20 @@ class QAgent:
         self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
 
 class QAgent_DblQ( QAgent ):
-    def __init__(self, state_size, action_size, seed, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995 ):
+    def __init__(self, state_size, action_size, gamma=0.99, lr=0.001, batch_size=64, buffer_size=10000, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995 ):
 
-        super(QAgent_DblQ, self).__init__( state_size=state_size, action_size=action_size, seed=seed, gamma=gamma, lr=lr, batch_size=batch_size, buffer_size=buffer_size, epsilon_start=epsilon_start, epsilon_end=epsilon_end, epsilon_decay=epsilon_decay )
+        super(QAgent_DblQ, self).__init__( state_size=state_size, action_size=action_size, gamma=gamma, lr=lr, batch_size=batch_size, buffer_size=buffer_size, epsilon_start=epsilon_start, epsilon_end=epsilon_end, epsilon_decay=epsilon_decay )
 
         self.qnetwork_target = QNetwork( state_size , action_size )
 
-    def act(self, state):
+    def act(self, state , deterministic=False ):
         state = torch.from_numpy(state).float().unsqueeze(0)
         self.qnetwork.eval()
         with torch.no_grad():
             action_values = self.qnetwork(state)
         self.qnetwork.train()
 
-        if random.random() > self.epsilon:
+        if deterministic or random.random() > self.epsilon:
             return np.argmax(action_values.cpu().data.numpy())
         else:
             return random.choice(np.arange(self.action_size))
@@ -137,9 +151,9 @@ class Crowd() :
         self.batch_size = batch_size
 
 
-    def act( self , state ) :
+    def act( self , state , deterministic=False ) :
         action_list = []
-        if random.random() > self.epsilon:
+        if deterministic or random.random() > self.epsilon:
             for agent in self.Qagent_list :
                 action_list.append( agent.act(state) )
             counts = np.bincount(action_list)
@@ -158,46 +172,106 @@ class Crowd() :
 
         self.epsilon = max(self.epsilon_end, self.epsilon_decay * self.epsilon)
 
-if __name__ == "__main__" :
+############################################################################################################
+# random/set seed stuff
+if args.seed :
+    seed = args.seed
+else :
+    # create a random seed
+    seed = int( time.time() )
+print("Using seed: ", seed)
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
 
-    env = gym.make("LunarLander-v3", continuous=False, gravity=-10.0,
-                enable_wind=False, wind_power=15.0, turbulence_power=1.5)
+############################################################################################################
+# Environment setup
+env = gym.make( "LunarLander-v3" , continuous=False , gravity=args.gravity ,
+            enable_wind=args.enable_wind , wind_power=args.wind_power, 
+            turbulence_power=args.turbulence_power )
 
-    state_size = env.observation_space.shape[0]
-    action_size = env.action_space.n
-    memory = deque( maxlen=10000 )
+state_size = env.observation_space.shape[0]
+action_size = env.action_space.n
+memory = deque( maxlen=10000 )
 
-    # ### Double Q learning agent
-    # agent = QAgent_DblQ( state_size=state_size, action_size=action_size, seed=0 )
-    
-    # ### Simple Q learning agent
-    # agent = QAgent( state_size=state_size, action_size=action_size, seed=0 )
-    
-    ### Crowd of single Q learning agents
-    for i in range(10) :
-        agents = [ QAgent( state_size=state_size , action_size=action_size , seed=i , epsilon_start=0.0 , epsilon_end=0.0 ) for i in range(10) ]
-    agent = Crowd( agents )
+############################################################################################################
+# Agent setup
 
-    num_episodes = 1000
-    t = 0
-    for e in range(num_episodes):
+if args.crowd :
+    if args.algo == "simple" :
+        agents = [ QAgent( state_size=state_size , action_size=action_size ) for i in range( args.num_agents ) ]
+    elif args.algo == "double" :
+        agents = [ QAgent_DblQ( state_size=state_size , action_size=action_size ) for i in range( args.num_agents ) ]
+    agent = Crowd( agents , batch_size=args.batch_size , epsilon_start=args.epsilon_start , epsilon_end=args.epsilon_end , epsilon_decay=args.epsilon_decay )
+else :
+    if args.algo == "double" :
+        agent = QAgent_DblQ( state_size=state_size, action_size=action_size )
 
-        state , info = env.reset()
-        state = np.reshape(state, [1, state_size])
-        total_reward = 0
+    if args.algo == "simple" :
+        agent = QAgent( state_size=state_size, action_size=action_size )
 
-        for time in range(500) :
+num_episodes = 1000
+t = 0 ; training_evals = [] ; eval_evals = []
+for e in range(num_episodes):
 
-            action = agent.act(state)
-            next_state , reward , done , truncated , info = env.step(action)
-            memory.append( ( state , action , reward , next_state , done ) )
-            next_state = np.reshape(next_state, [1, state_size])
-            if t % 4 == 0 and len(memory) > agent.batch_size :
-                agent.learn( memory)
-            state = next_state
-            total_reward += reward
-            t += 1
+    state , info = env.reset()
+    state = np.reshape(state, [1, state_size])
+    total_reward = 0
 
-            if done or truncated or time == 499 :
-                print(f"Episode: {e+1}/{num_episodes} , Score: {total_reward} , Done: {done} , Truncated: {truncated} , Time: {time}")
-                break
+    for time in range(500) :
+
+        action = agent.act(state)
+        next_state , reward , done , truncated , info = env.step(action)
+        memory.append( ( state , action , reward , next_state , done ) )
+        next_state = np.reshape(next_state, [1, state_size])
+        if t % 4 == 0 and len(memory) > agent.batch_size :
+            agent.learn( memory)
+        state = next_state
+        total_reward += reward
+        t += 1
+
+        if done or truncated or time == 499 :
+            print(f"Episode: {e+1}/{num_episodes} , Score: {total_reward} , Done: {done} , Truncated: {truncated} , Time: {time}")
+            break
+
+    training_evals.append( { "episode" : e ,
+                             "score" : total_reward ,
+                             "done" : done ,
+                             "truncated" : truncated ,
+                             "time" : time ,
+                             "cumulative time" : t } )
+
+    if args.eval_interval > 0 and ( (e+1) % args.eval_interval == 0 or e == 0 ) :
+        eval_scores = []
+        for _ in range( args.eval_episodes ) :
+            state , info = env.reset()
+            state = np.reshape(state, [1, state_size])
+            total_reward = 0
+            for time in range( args.training_epsisode_length ) :
+                action = agent.act(state , deterministic=True)
+                next_state , reward , done , truncated , info = env.step(action)
+                next_state = np.reshape(next_state, [1, state_size])
+                state = next_state
+                total_reward += reward
+                if done or truncated or time == ( args.training_epsisode_length - 1 ) :
+                    break
+            eval_scores.append( total_reward )
+        print( f"Evaluation: {t} , Mean score: {np.mean(eval_scores)} , Std score: {np.std(eval_scores)} , Max score: {np.max(eval_scores)} , Min score: {np.min(eval_scores)}" )
+        eval_evals.append( { "episode" : e , 
+                            "mean_score" : np.mean(eval_scores) , 
+                            "std_score" : np.std(eval_scores) ,
+                            "scores" : eval_scores } )
+
+############################################################################################################
+# Save results
+if args.results_dir :
+    filename = args.results_dir + "/" + str(uuid.uuid4()) + ".pkl"
+    print("Saving results to ", filename)
+    with open( filename , "wb" ) as fh :
+        pickle.dump( args , fh )
+        pickle.dump( training_evals , fh )
+        pickle.dump( eval_evals , fh )
+
+############################################################################################################
+# print the means eval scores
+print("Mean eval scores: ", [ eval["mean_score"] for eval in eval_evals ] )
